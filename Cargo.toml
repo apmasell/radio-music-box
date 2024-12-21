@@ -1,0 +1,18 @@
+[package]
+name = "radio-music-box"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-watcher = "0.3.0"
+clap = { version = "4.5.23", features = ["derive"] }
+futures = "0.3.31"
+http-body-util = "0.1.2"
+hyper = { version = "1.5.2", features = ["http1", "server"] }
+hyper-util = { version = "0.1.10", features = ["http1", "server", "tokio"] }
+mp3lame-sys = "0.1.4"
+rand = "0.8.5"
+symphonia = { version = "0.5.4", features = ["all-formats", "mp3"] }
+tokio = { version = "1.42.0", features = ["fs", "signal"] }
+tokio-stream = { version = "0.1.17", features = ["signal"] }
+walkdir = "2.5.0"
