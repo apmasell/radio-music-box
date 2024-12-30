@@ -1,36 +1,38 @@
+mod decoder;
 mod encoder;
+mod exit_filter;
+mod playlist;
 
+use crate::decoder::DecodedStream;
+use crate::encoder::EncodedStream;
+use crate::exit_filter::ExitFilter;
+use crate::playlist::Playlist;
 use async_watcher::notify::{Error, ErrorKind};
 use async_watcher::{
     AsyncDebouncer, DebouncedEvent,
     notify::{EventKind, RecursiveMode},
 };
 use clap::Parser;
-use futures::FutureExt;
 use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt};
 use http_body_util::{Full, StreamBody};
 use hyper::body::{Body, Bytes, Frame, Incoming};
 use hyper::header::CONTENT_TYPE;
 use hyper::service::Service;
 use hyper::{Method, Request, Response, StatusCode, http};
 use hyper_util::rt::TokioIo;
-use rand::seq::SliceRandom;
 use std::collections::BTreeSet;
 use std::convert::Infallible;
-use std::fs::File;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use symphonia::core::audio::{AudioBuffer, Channels, Signal, SignalSpec};
-use symphonia::core::io::MediaSourceStream;
 use tokio::net::TcpListener;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::{Mutex, broadcast, mpsc};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::{RwLock, broadcast};
 use walkdir::WalkDir;
 
-type SongList = Arc<Mutex<BTreeSet<Arc<Path>>>>;
+type SongList = Arc<RwLock<BTreeSet<Arc<Path>>>>;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Arguments {
@@ -60,95 +62,6 @@ fn scan(path: &Path) -> BTreeSet<Arc<Path>> {
     eprintln!("Scanned {} files", result.len());
     result
 }
-pub type StreamWrite = Result<Frame<Bytes>, Infallible>;
-async fn play(songs: SongList, exit: broadcast::Receiver<()>, output: mpsc::Sender<StreamWrite>) {
-    let Ok(mut encoder) = encoder::Encoder::new(output, exit) else {
-        return;
-    };
-    let mut current_songs = Vec::new();
-    let mut progress = false;
-    loop {
-        if current_songs.is_empty() {
-            current_songs.extend(songs.clone().lock().await.iter().cloned());
-            current_songs.shuffle(&mut rand::thread_rng());
-        }
-        'playlist: while let Some(song) = current_songs.pop() {
-            eprintln!("Trying to play {}", song.display());
-            let Ok(file) = File::open(&song) else {
-                eprintln!("Can't open {}", song.display());
-                continue;
-            };
-            let source = MediaSourceStream::new(Box::new(file), Default::default());
-            match symphonia::default::get_probe().format(
-                &Default::default(),
-                source,
-                &Default::default(),
-                &Default::default(),
-            ) {
-                Err(e) => {
-                    eprintln!("Failed to read {}: {}", song.display(), e);
-                }
-                Ok(mut prober) => {
-                    let tracks: Vec<_> = prober.format.tracks().into_iter().cloned().collect();
-                    if tracks.is_empty() {
-                        eprintln!("No tracks in {}; Skipping", song.display());
-                        continue;
-                    }
-                    eprintln!("Tracks in {}: {}", song.display(), tracks.len());
-                    for track in tracks {
-                        let Ok(mut decoder) = symphonia::default::get_codecs()
-                            .make(&track.codec_params, &Default::default())
-                        else {
-                            eprintln!("Bad track in {}", song.display());
-                            continue;
-                        };
-                        loop {
-                            let Ok(packet) = prober.format.next_packet() else {
-                                eprintln!("Bad packet in {}", song.display());
-                                break 'playlist;
-                            };
-                            if packet.track_id() != track.id {
-                                continue;
-                            }
-
-                            match decoder.decode(&packet) {
-                                Err(e) => {
-                                    eprintln!("Decode error in {}: {}", song.display(), e);
-                                    break 'playlist;
-                                }
-                                Ok(data) => {
-                                    let mut output_buffer = AudioBuffer::<i16>::new(
-                                        data.capacity() as u64,
-                                        SignalSpec::new(
-                                            44100,
-                                            Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
-                                        ),
-                                    );
-                                    data.convert(&mut output_buffer);
-                                    if encoder
-                                        .write(output_buffer.chan(0), output_buffer.chan(1))
-                                        .await
-                                        .is_err()
-                                    {
-                                        eprintln!("Encoding error. Giving up on stream.");
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    progress = true;
-                }
-            }
-
-            if !progress {
-                eprintln!("Nothing to play. Giving up on stream.");
-                encoder.flush().await;
-                return;
-            }
-        }
-    }
-}
 
 #[derive(Clone)]
 struct Songs {
@@ -174,12 +87,21 @@ impl Service<Request<Incoming>> for Songs {
                         )
                 }
                 (&Method::GET, "/stream.mp3") => {
-                    let (tx, rx) = mpsc::channel(5);
-                    tokio::spawn(play(songs, exit.subscribe(), tx));
-
-                    Response::builder()
-                        .header(CONTENT_TYPE, "audio/mp3")
-                        .body(Box::new(StreamBody::new(ReceiverStream::new(rx))) as BoxedBody)
+                    match EncodedStream::new(ExitFilter::new(
+                        exit,
+                        Playlist::from(songs).flat_map(DecodedStream::from),
+                    )) {
+                        Ok(stream) => Response::builder()
+                            .header(CONTENT_TYPE, "audio/mp3")
+                            .body(Box::new(StreamBody::new(
+                                stream.map(|data| Ok(Frame::data(data))),
+                            )) as BoxedBody),
+                        Err(_) => Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Box::new(Full::new(Bytes::from(
+                                "Failed to initalise audio encoder",
+                            ))) as BoxedBody),
+                    }
                 }
                 _ => Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -196,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         port,
         path: root_path,
     } = Arguments::parse();
-    let songs = Arc::new(Mutex::new(scan(&root_path)));
+    let songs = Arc::new(RwLock::new(scan(&root_path)));
     let (exit_tx, mut exit_rx) = tokio::sync::broadcast::channel(1);
 
     {
@@ -230,11 +152,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match event {
                     WatcherEvent::Exit | WatcherEvent::Files(None) => break,
                     WatcherEvent::Rescan => {
-                        let mut songs = songs.lock().await;
+                        let mut songs = songs.write().await;
                         *songs = scan(&root_path);
                     }
                     WatcherEvent::Files(Some(Ok(events))) => {
-                        let mut songs = songs.lock().await;
+                        let mut songs = songs.write().await;
                         for DebouncedEvent { path, event, .. } in events {
                             match event.kind {
                                 EventKind::Any => {}
@@ -266,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     eprintln!("Error watching files: {}", e)
                                 }
                                 ErrorKind::PathNotFound => {
-                                    let mut songs = songs.lock().await;
+                                    let mut songs = songs.write().await;
                                     for path in paths {
                                         songs.remove(path.as_path());
                                     }
