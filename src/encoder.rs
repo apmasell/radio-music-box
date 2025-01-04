@@ -71,7 +71,7 @@ impl<I: Stream<Item = AudioBuffer<i16>> + Unpin> Stream for EncodedStream<I> {
                         encoder.lame,
                         value.chan(0).as_ptr() as *const c_short,
                         value.chan(1).as_ptr() as *const c_short,
-                        value.capacity() as c_int,
+                        value.frames() as c_int,
                         buffer.as_ptr() as *mut c_uchar,
                         buffer.len() as c_int,
                     )
