@@ -2,12 +2,14 @@ mod decoder;
 mod encoder;
 mod exit_filter;
 mod playlist;
+mod rate_limited_stream;
 mod scanner;
 
 use crate::decoder::DecodedStream;
 use crate::encoder::EncodedStream;
 use crate::exit_filter::ExitFilter;
 use crate::playlist::Playlist;
+use crate::rate_limited_stream::RateLimitedStream;
 use clap::Parser;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
@@ -67,7 +69,7 @@ impl Service<Request<Incoming>> for Songs {
                             .header(CONTENT_TYPE, "audio/mp3")
                             .header(CACHE_CONTROL, "no-cache")
                             .body(Box::new(StreamBody::new(
-                                stream.map(|data| Ok(Frame::data(data))),
+                                RateLimitedStream::new(stream).map(|data| Ok(Frame::data(data))),
                             )) as BoxedBody),
                         Err(_) => Response::builder()
                             .status(StatusCode::INTERNAL_SERVER_ERROR)

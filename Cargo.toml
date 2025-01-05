@@ -14,6 +14,7 @@ mp3lame-sys = "0.1.4"
 rand = "0.8.5"
 rubato = "0.16.1"
 symphonia = { version = "0.5.4", features = ["all-formats", "mp3"] }
+tokenbucket = "0.1.6"
 tokio = { version = "1.42.0", features = ["fs", "signal"] }
 tokio-stream = { version = "0.1.17", features = ["signal"] }
 walkdir = "2.5.0"

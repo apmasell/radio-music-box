@@ -752,6 +752,7 @@ dependencies = [
  "rand",
  "rubato",
  "symphonia",
+ "tokenbucket",
  "tokio",
  "tokio-stream",
  "walkdir",
@@ -1127,6 +1128,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "tokenbucket"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43b432f4112b803f1ced6a45a6639965e6ac7b43e9f39cf758121848300ed525"
 
 [[package]]
 name = "tokio"
