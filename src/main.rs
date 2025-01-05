@@ -13,7 +13,7 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use http_body_util::{Full, StreamBody};
 use hyper::body::{Body, Bytes, Frame, Incoming};
-use hyper::header::CONTENT_TYPE;
+use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::service::Service;
 use hyper::{Method, Request, Response, StatusCode, http};
 use hyper_util::rt::TokioIo;
@@ -65,6 +65,7 @@ impl Service<Request<Incoming>> for Songs {
                     )) {
                         Ok(stream) => Response::builder()
                             .header(CONTENT_TYPE, "audio/mp3")
+                            .header(CACHE_CONTROL, "no-cache")
                             .body(Box::new(StreamBody::new(
                                 stream.map(|data| Ok(Frame::data(data))),
                             )) as BoxedBody),
