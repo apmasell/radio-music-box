@@ -2,8 +2,16 @@
 <html>
   <head>
     <title>Tunes</title>
+    <style type="text/css">
+      @media (prefers-color-scheme: dark) {
+        body {
+          background-color: black;
+          color: white;
+        }
+      }
+    </style>
   </head>
   <body>
-     <audio controls><source src="stream.mp3" type="audio/mpeg"></audio>
+     <audio controls preload="none"><source src="stream.mp3" type="audio/mpeg"></audio>
   </body>
 </html>
