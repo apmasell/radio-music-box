@@ -60,6 +60,12 @@ impl Service<Request<Incoming>> for Songs {
                                 as BoxedBody,
                         )
                 }
+                (&Method::GET, "/favicon.ico") => Response::builder()
+                    .header(CONTENT_TYPE, "image/svg_xml")
+                    .body(
+                        Box::new(Full::new(Bytes::from(&include_bytes!("note.svg")[..])))
+                            as BoxedBody,
+                    ),
                 (&Method::GET, "/stream.mp3") => {
                     match EncodedStream::new(ExitFilter::new(
                         exit,
