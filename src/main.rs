@@ -118,12 +118,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             match connection {
                 Ok((stream, addr)) => {
-                    if let Err(e) = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(TokioIo::new(stream), songs.clone())
-                        .await
-                    {
-                        eprintln!("Failed to handle incoming connection for {}: {}", e, addr);
-                    }
+                    let songs = songs.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), songs)
+                            .await
+                        {
+                            eprintln!("Failed to handle incoming connection for {}: {}", e, addr);
+                        }
+                    });
                 }
                 Err(e) => {
                     eprintln!("Failed to accept connection: {}", e);
