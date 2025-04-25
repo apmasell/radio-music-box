@@ -69,13 +69,13 @@ impl Service<Request<Incoming>> for Songs {
                 (&Method::GET, "/stream.mp3") => {
                     match EncodedStream::new(ExitFilter::new(
                         exit,
-                        Playlist::from(songs).flat_map(DecodedStream::from),
+                        RateLimitedStream::new(Playlist::from(songs).flat_map(DecodedStream::from)),
                     )) {
                         Ok(stream) => Response::builder()
                             .header(CONTENT_TYPE, "audio/mp3")
                             .header(CACHE_CONTROL, "no-cache")
                             .body(Box::new(StreamBody::new(
-                                RateLimitedStream::new(stream).map(|data| Ok(Frame::data(data))),
+                                stream.map(|data| Ok(Frame::data(data))),
                             )) as BoxedBody),
                         Err(_) => Response::builder()
                             .status(StatusCode::INTERNAL_SERVER_ERROR)

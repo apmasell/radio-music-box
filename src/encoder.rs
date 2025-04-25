@@ -26,7 +26,7 @@ impl<I> EncodedStream<I> {
                 }
 
                 lame_set_num_channels(handle, 2);
-                lame_set_in_samplerate(handle, 44100);
+                lame_set_in_samplerate(handle, 44_100);
                 lame_set_quality(handle, 2);
                 let err = lame_init_params(handle);
                 if err < 0 {
