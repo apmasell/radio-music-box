@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Channels, Signal, SignalSpec};
 use symphonia::core::codecs::Decoder;
 use symphonia::core::conv::IntoSample;
+use symphonia::core::errors::Error;
 use symphonia::core::formats::Track;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::ProbeResult;
@@ -48,7 +49,6 @@ impl From<Arc<Path>> for DecodedStream {
                     eprintln!("No tracks in {}; Skipping", song.display());
                     return DecodedStream::Empty;
                 }
-                eprintln!("Tracks in {}: {}", song.display(), tracks.len());
                 DecodedStream::Song {
                     song,
                     tracks,
@@ -74,9 +74,15 @@ impl Stream for DecodedStream {
             return Poll::Ready(None);
         };
         loop {
-            let Ok(packet) = prober.format.next_packet() else {
-                eprintln!("Bad packet in {}", song.display());
-                return Poll::Ready(None);
+            let packet = match prober.format.next_packet() {
+                Ok(packet) => packet,
+                Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Poll::Ready(None);
+                }
+                Err(e) => {
+                    eprintln!("Bad packet in {}: {}", song.display(), e);
+                    return Poll::Ready(None);
+                }
             };
             let mut current_track_temp = None;
             swap(&mut current_track_temp, current_track);
