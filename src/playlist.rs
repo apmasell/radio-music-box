@@ -40,7 +40,7 @@ impl Stream for Playlist {
                     return Poll::Pending;
                 };
                 current.extend(guard.iter().cloned());
-                current.shuffle(&mut rand::thread_rng());
+                current.shuffle(&mut rand::rng());
             }
             *waiting = None;
             if let Some(song) = current.pop() {
