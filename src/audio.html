@@ -2,7 +2,10 @@
 <html>
   <head>
     <title>Tunes</title>
-    <style type="text/css">
+    <style>
+        body{
+            font-family: sans-serif;
+        }
       @media (prefers-color-scheme: dark) {
         body {
           background-color: black;
@@ -13,10 +16,26 @@
   </head>
   <body>
      <audio id="player" controls preload="none" style="width: 100%"><source src="stream.mp3" type="audio/mpeg"></audio>
+     <p id="local"></p>
      <script type="text/javascript">
        const player = document.getElementById("player");
        player.volume = parseFloat(window.localStorage.getItem("volume")) || 1;
        player.addEventListener("volumechange", (event) => window.localStorage.setItem("volume", `${player.volume}`));
+       const local = document.getElementById("local");
+       let first = true;
+       async function localCallback() {
+           const localState = await (await fetch("local", {method: first ? "GET": "POST"})).json()
+           first = false;
+           if (localState === null) {
+               document.body.removeChild(local);
+           } else if (localState) {
+               local.innerText="▶ Play on Server"
+           } else  {
+               local.innerText = "⏸ Pause on Server"
+           }
+       }
+       local.addEventListener("click", localCallback);
+       localCallback();
      </script>
   </body>
 </html>

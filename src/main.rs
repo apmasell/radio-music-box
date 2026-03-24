@@ -1,6 +1,8 @@
 mod decoder;
 mod encoder;
 mod exit_filter;
+mod local;
+mod pausable_stream;
 mod playlist;
 mod rate_limited_stream;
 mod scanner;
@@ -8,6 +10,7 @@ mod scanner;
 use crate::decoder::DecodedStream;
 use crate::encoder::EncodedStream;
 use crate::exit_filter::ExitFilter;
+use crate::pausable_stream::PauseResume;
 use crate::playlist::Playlist;
 use crate::rate_limited_stream::RateLimitedStream;
 use clap::Parser;
@@ -32,6 +35,8 @@ type SongList = Arc<RwLock<BTreeSet<Arc<Path>>>>;
 #[command(version, about, long_about = None)]
 struct Arguments {
     #[arg(short, long)]
+    local_device: Option<String>,
+    #[arg(short, long)]
     port: u16,
     #[arg(value_name = "DIRECTORY")]
     path: PathBuf,
@@ -41,6 +46,7 @@ struct Arguments {
 struct Songs {
     songs: SongList,
     exit: broadcast::Sender<()>,
+    local_player: Option<PauseResume>,
 }
 type BoxedBody = Box<dyn Body<Data = Bytes, Error = Infallible> + Unpin + Send + 'static>;
 impl Service<Request<Incoming>> for Songs {
@@ -49,24 +55,26 @@ impl Service<Request<Incoming>> for Songs {
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn call(&self, req: Request<Incoming>) -> Self::Future {
-        let Songs { songs, exit } = self.clone();
+        let Songs {
+            songs,
+            exit,
+            local_player,
+        } = self.clone();
         async move {
-            match (req.method(), req.uri().path()) {
-                (&Method::GET, "/") => {
-                    Response::builder()
-                        .header(CONTENT_TYPE, "text/html")
-                        .body(
-                            Box::new(Full::new(Bytes::from(&include_bytes!("audio.html")[..])))
-                                as BoxedBody,
-                        )
-                }
-                (&Method::GET, "/favicon.ico") => Response::builder()
+            match (req.method(), req.uri().path(), local_player) {
+                (&Method::GET, "/", _) => Response::builder()
+                    .header(CONTENT_TYPE, "text/html;charset=UTF-8")
+                    .body(
+                        Box::new(Full::new(Bytes::from(&include_bytes!("audio.html")[..])))
+                            as BoxedBody,
+                    ),
+                (&Method::GET, "/favicon.ico", _) => Response::builder()
                     .header(CONTENT_TYPE, "image/svg_xml")
                     .body(
                         Box::new(Full::new(Bytes::from(&include_bytes!("note.svg")[..])))
                             as BoxedBody,
                     ),
-                (&Method::GET, "/stream.mp3") => {
+                (&Method::GET, "/stream.mp3", _) => {
                     match EncodedStream::new(ExitFilter::new(
                         exit,
                         RateLimitedStream::new(Playlist::from(songs).flat_map(DecodedStream::from)),
@@ -84,6 +92,24 @@ impl Service<Request<Incoming>> for Songs {
                             ))) as BoxedBody),
                     }
                 }
+                (_, "/local", None) => Response::builder()
+                    .header(CONTENT_TYPE, "application/json")
+                    .status(StatusCode::OK)
+                    .body(Box::new(Full::new(Bytes::from("null"))) as BoxedBody),
+                (method, "/local", Some(local_player)) => {
+                    let is_paused = match method {
+                        &Method::POST => local_player.pause_resume(),
+                        _ => local_player.is_paused(),
+                    };
+                    Response::builder()
+                        .header(CONTENT_TYPE, "application/json")
+                        .status(StatusCode::OK)
+                        .body(Box::new(Full::new(Bytes::from(if is_paused {
+                            "true"
+                        } else {
+                            "false"
+                        }))) as BoxedBody)
+                }
                 _ => Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Box::new(Full::new(Bytes::from("Not found"))) as BoxedBody),
@@ -96,14 +122,21 @@ impl Service<Request<Incoming>> for Songs {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Arguments {
+        local_device,
         port,
         path: root_path,
     } = Arguments::parse();
     let (exit_tx, mut exit_rx) = broadcast::channel(1);
     let songs = scanner::create_scanner(root_path, &exit_tx).await?;
+
+    let local_player = match local_device {
+        Some(local_device) => Some(local::start(songs.clone(), exit_tx.clone(), local_device)?),
+        None => None,
+    };
     let songs = Songs {
         songs,
         exit: exit_tx.clone(),
+        local_player,
     };
     let listener =
         TcpListener::bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)).await?;
