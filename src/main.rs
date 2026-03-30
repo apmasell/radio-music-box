@@ -36,6 +36,8 @@ type SongList = Arc<RwLock<BTreeSet<Arc<Path>>>>;
 struct Arguments {
     #[arg(short, long)]
     local_device: Option<String>,
+    #[arg(long)]
+    start_paused: bool,
     #[arg(short, long)]
     port: u16,
     #[arg(value_name = "DIRECTORY")]
@@ -125,12 +127,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_device,
         port,
         path: root_path,
+        start_paused,
     } = Arguments::parse();
     let (exit_tx, mut exit_rx) = broadcast::channel(1);
     let songs = scanner::create_scanner(root_path, &exit_tx).await?;
 
     let local_player = match local_device {
-        Some(local_device) => Some(local::start(songs.clone(), exit_tx.clone(), local_device)?),
+        Some(local_device) => Some(local::start(
+            songs.clone(),
+            exit_tx.clone(),
+            local_device,
+            start_paused,
+        )?),
         None => None,
     };
     let songs = Songs {

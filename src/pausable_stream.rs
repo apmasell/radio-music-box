@@ -14,8 +14,8 @@ pub struct PausableStream<S: Stream> {
 pub struct PauseResume(Arc<Mutex<(bool, Option<Waker>)>>);
 
 impl<S: Stream> PausableStream<S> {
-    pub fn new(stream: S, when_paused: S::Item) -> (Self, PauseResume) {
-        let state = Arc::new(Mutex::new((true, None)));
+    pub fn new(stream: S, is_paused: bool, when_paused: S::Item) -> (Self, PauseResume) {
+        let state = Arc::new(Mutex::new((is_paused, None)));
 
         (
             PausableStream {

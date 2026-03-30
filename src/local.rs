@@ -3,7 +3,6 @@ use crate::decoder::DecodedStream;
 use crate::exit_filter::ExitFilter;
 use crate::pausable_stream::{PausableStream, PauseResume};
 use crate::playlist::Playlist;
-use crate::rate_limited_stream::RateLimitedStream;
 use alsa::pcm::{Access, Format, HwParams, State};
 use alsa::{Direction, PCM, ValueOr};
 use futures::StreamExt;
@@ -22,6 +21,7 @@ pub fn start(
     songs: SongList,
     exit: broadcast::Sender<()>,
     device: String,
+    start_paused: bool,
 ) -> Result<PauseResume, Box<dyn std::error::Error>> {
     let device = CString::new(device.into_bytes())?;
     let pcm = PCM::open(&device, Direction::Playback, false)?;
@@ -41,8 +41,10 @@ pub fn start(
     drop(swp);
 
     let (stream, pause_resume) = PausableStream::new(
-        RateLimitedStream::new(Playlist::from(songs).flat_map(DecodedStream::from))
+        Playlist::from(songs)
+            .flat_map(DecodedStream::from)
             .map(NextBuffer::Buffer),
+        start_paused,
         NextBuffer::Paused,
     );
     let stream = ExitFilter::new(exit, stream);
