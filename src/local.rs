@@ -23,6 +23,7 @@ pub fn start(
     device: String,
     start_paused: bool,
 ) -> Result<PauseResume, Box<dyn std::error::Error>> {
+    let thread_name = format!("Player for {}", &device);
     let device = CString::new(device.into_bytes())?;
     let pcm = PCM::open(&device, Direction::Playback, false)?;
     let hwp = HwParams::any(&pcm)?;
@@ -49,7 +50,7 @@ pub fn start(
     );
     let stream = ExitFilter::new(exit, stream);
 
-    thread::spawn(move || {
+    thread::Builder::new().name(thread_name).spawn(move || {
         let io = match pcm.io_i16() {
             Ok(io) => io,
             Err(e) => {
@@ -99,7 +100,7 @@ pub fn start(
                 }
             }
         }
-    });
+    })?;
 
     Ok(pause_resume)
 }
