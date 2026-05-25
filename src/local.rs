@@ -77,6 +77,7 @@ pub fn start(
                         }
                         match io.writei(&interleaved) {
                             Ok(written) => offset += written,
+                            Err(e) if e.errno() == libc::EPIPE => (),
                             Err(e) => {
                                 eprintln!("Failed to write to ALSA: {}", e);
                                 return;
