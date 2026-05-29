@@ -77,7 +77,12 @@ pub fn start(
                         }
                         match io.writei(&interleaved) {
                             Ok(written) => offset += written,
-                            Err(e) if e.errno() == libc::EPIPE => (),
+                            Err(e) if e.errno() == libc::EPIPE => {
+                                if let Err(e) = pcm.recover(libc::EPIPE, false) {
+                                    eprintln!("Failed to recover from ALSA underrun: {}", e);
+                                    return;
+                                }
+                            }
                             Err(e) => {
                                 eprintln!("Failed to write to ALSA: {}", e);
                                 return;
