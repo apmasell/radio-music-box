@@ -8,7 +8,7 @@ use std::ffi::{c_int, c_short, c_uchar};
 use std::pin::Pin;
 use std::ptr::null_mut;
 use std::task::{Context, Poll};
-use symphonia::core::audio::{AudioBuffer, Signal};
+use symphonia::core::audio::{Audio, AudioBuffer};
 
 pub struct EncodedStream<I> {
     input: I,
@@ -66,11 +66,17 @@ impl<I: Stream<Item = AudioBuffer<i16>> + Unpin> Stream for EncodedStream<I> {
             }
             Poll::Ready(Some(value)) => {
                 let mut buffer = vec![0_u8; value.capacity() + value.capacity() / 3 + 7200];
+                let Some(left_plane) = value.plane(0) else {
+                    return Poll::Ready(None);
+                };
+                let Some(right_plane) = value.plane(1) else {
+                    return Poll::Ready(None);
+                };
                 let length = unsafe {
                     lame_encode_buffer(
                         encoder.lame,
-                        value.chan(0).as_ptr() as *const c_short,
-                        value.chan(1).as_ptr() as *const c_short,
+                        left_plane.as_ptr() as *const c_short,
+                        right_plane.as_ptr() as *const c_short,
                         value.frames() as c_int,
                         buffer.as_ptr() as *mut c_uchar,
                         buffer.len() as c_int,

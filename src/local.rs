@@ -8,7 +8,7 @@ use alsa::{Direction, PCM, ValueOr};
 use futures::StreamExt;
 use std::ffi::CString;
 use std::thread;
-use symphonia::core::audio::{AudioBuffer, Signal};
+use symphonia::core::audio::{Audio, AudioBuffer};
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
@@ -48,7 +48,16 @@ pub fn start(
         start_paused,
         NextBuffer::Paused,
     );
-    let stream = ExitFilter::new(exit, stream);
+    let mut stream = ExitFilter::new(exit, stream);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(10);
+    tokio::spawn(async move {
+        while let Some(buffer) = stream.next().await {
+            if let Err(_) = sender.send(buffer).await {
+                eprintln!("Quitting ALSA stream");
+                return;
+            }
+        }
+    });
 
     thread::Builder::new().name(thread_name).spawn(move || {
         let io = match pcm.io_i16() {
@@ -59,7 +68,7 @@ pub fn start(
             }
         };
 
-        for buffer in futures::executor::block_on_stream(stream) {
+        while let Some(buffer) = receiver.blocking_recv() {
             if pcm.state() == State::Setup {
                 if let Err(e) = pcm.prepare() {
                     eprintln!("Failed to prepare to ALSA: {}", e);
@@ -72,8 +81,14 @@ pub fn start(
                     while offset < buffer.frames() {
                         let mut interleaved = Vec::with_capacity(buffer.frames() * 2);
                         for frame in 0..buffer.frames() {
-                            interleaved.push(buffer.chan(0)[frame]);
-                            interleaved.push(buffer.chan(1)[frame]);
+                            let Some(left_plane) = buffer.plane(0) else {
+                                continue;
+                            };
+                            let Some(right_plane) = buffer.plane(1) else {
+                                continue;
+                            };
+                            interleaved.push(left_plane[frame]);
+                            interleaved.push(right_plane[frame]);
                         }
                         match io.writei(&interleaved) {
                             Ok(written) => offset += written,

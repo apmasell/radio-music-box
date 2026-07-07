@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 alsa = "^0.11"
-async-watcher = "^0.3"
+async-watcher = "^0.4"
 clap = { version = "^4.5", features = ["derive"] }
 futures = "^0.3"
 http-body-util = "^0.1"
@@ -14,7 +14,7 @@ hyper-util = { version = "^0.1", features = ["http1", "server", "tokio"] }
 libc = "^0.2"
 mp3lame-sys = "^0.1"
 rand = "^0.10"
-rubato = { version = "^0.16", features = ["fft_resampler"] }
-symphonia = { version = "^0.5", features = ["all-formats", "mp3"] }
+rubato = { version = "^3.0", features = ["fft_resampler"] }
+symphonia = { version = "^0.6", features = ["all-formats", "mp3"] }
 tokio = { version = "^1.44", features = ["fs", "signal"] }
 walkdir = "^2.5"

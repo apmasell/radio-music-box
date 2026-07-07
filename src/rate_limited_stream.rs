@@ -3,7 +3,7 @@ use hyper::body::Bytes;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
-use symphonia::core::audio::{AudioBuffer, Signal};
+use symphonia::core::audio::{Audio, AudioBuffer};
 use tokio::time::Sleep;
 
 pub struct RateLimitedStream<S> {
