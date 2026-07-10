@@ -62,6 +62,7 @@ where
             }
         } else {
             *pause_emitted = false;
+            drop(guard);
             stream.poll_next_unpin(cx)
         }
     }
@@ -69,18 +70,16 @@ where
 
 impl PauseResume {
     pub fn is_paused(&self) -> bool {
-        let guard = self
-            .0
-            .lock()
-            .expect("Failed to unlock state in pausable stream");
+        let Ok(guard) = self.0.lock() else {
+            return true;
+        };
         let (is_paused, _) = &*guard;
         *is_paused
     }
     pub fn pause_resume(&self) -> bool {
-        let mut guard = self
-            .0
-            .lock()
-            .expect("Failed to unlock state in pausable stream");
+        let Ok(mut guard) = self.0.lock() else {
+            return true;
+        };
         let (is_paused, waker) = &mut *guard;
         if *is_paused {
             *is_paused = false;
