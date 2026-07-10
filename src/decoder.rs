@@ -1,5 +1,5 @@
 use futures::Stream;
-use rubato::audioadapter_buffers::direct::InterleavedSliceOfVecs;
+use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Resampler};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -236,9 +236,9 @@ impl ResamplingCopy {
                     .collect();
 
                 let (input_consumed, output_frames) = match resampler.process_into_buffer(
-                    &InterleavedSliceOfVecs::new(&inputs, 2, input.frames())
+                    &SequentialSliceOfVecs::new(&inputs, 2, input.frames())
                         .expect("Failed to set up resampling input"),
-                    &mut InterleavedSliceOfVecs::new_mut(
+                    &mut SequentialSliceOfVecs::new_mut(
                         &mut buffer,
                         2,
                         resampler.output_frames_next(),
