@@ -1,18 +1,21 @@
 use futures::Stream;
-use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
-use rubato::{Fft, FixedSync, Resampler};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::audioadapter_buffers::owned::InterleavedOwned;
+use rubato::{
+    Async, FixedAsync, ResampleError, Resampler, SincInterpolationParameters,
+    SincInterpolationType, WindowFunction,
+};
 use std::collections::VecDeque;
 use std::fs::File;
+use std::iter::repeat;
 use std::mem::swap;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use symphonia::core::audio::conv::IntoSample;
+use symphonia::core::audio::conv::{FromSample, IntoSample};
 use symphonia::core::audio::sample::Sample;
-use symphonia::core::audio::{
-    Audio, AudioBuffer, AudioMut, AudioSpec, Channels, GenericAudioBufferRef, Position,
-};
+use symphonia::core::audio::{Audio, AudioBuffer, GenericAudioBufferRef, Position};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::AudioDecoder;
 use symphonia::core::formats::{FormatReader, Track};
@@ -63,7 +66,7 @@ impl From<Arc<Path>> for DecodedStream {
 }
 
 impl Stream for DecodedStream {
-    type Item = AudioBuffer<i16>;
+    type Item = Vec<Vec<f32>>;
 
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let DecodedStream::Song {
@@ -88,38 +91,55 @@ impl Stream for DecodedStream {
             };
             let mut current_track_temp = None;
             swap(&mut current_track_temp, current_track);
-            let (mut decoder, track_id, mut resampler) =
-                match current_track_temp.filter(|(_, track_id, _)| packet.track_id == *track_id) {
-                    None => match tracks.pop_front() {
-                        None => return Poll::Ready(None),
-                        Some(track) => {
-                            let Some(CodecParameters::Audio(params)) = &track.codec_params else {
-                                continue;
-                            };
-                            let Ok(decoder) = symphonia::default::get_codecs()
-                                .make_audio_decoder(params, &Default::default())
-                            else {
-                                eprintln!("Bad track in {}", song.display());
-                                return Poll::Ready(None);
-                            };
-                            match track
-                                .codec_params
-                                .map(|params| match params {
-                                    CodecParameters::Audio(audio) => audio
-                                        .sample_rate
-                                        .map(|rate| ResamplingCopy::new(rate))
-                                        .flatten(),
-                                    _ => None,
-                                })
-                                .flatten()
-                            {
-                                Some(resampler) => (decoder, track.id, resampler),
-                                None => return Poll::Ready(None),
-                            }
+            let still_current_track = match current_track_temp.as_mut() {
+                Some((_, track_id, resampler)) => {
+                    if packet.track_id == *track_id {
+                        true
+                    } else {
+                        eprintln!("Draining resampler");
+                        let output = resampler.drain();
+                        if !output.is_empty() {
+                            return Poll::Ready(Some(output));
                         }
-                    },
-                    Some(value) => value,
-                };
+                        false
+                    }
+                }
+                None => false,
+            };
+            let (mut decoder, track_id, mut resampler) = if let Some(value) = current_track_temp
+                && still_current_track
+            {
+                value
+            } else {
+                match tracks.pop_front() {
+                    None => return Poll::Ready(None),
+                    Some(track) => {
+                        let Some(CodecParameters::Audio(params)) = &track.codec_params else {
+                            continue;
+                        };
+                        let Ok(decoder) = symphonia::default::get_codecs()
+                            .make_audio_decoder(params, &Default::default())
+                        else {
+                            eprintln!("Bad track in {}", song.display());
+                            return Poll::Ready(None);
+                        };
+                        match track
+                            .codec_params
+                            .map(|params| match params {
+                                CodecParameters::Audio(audio) => audio
+                                    .sample_rate
+                                    .map(|rate| ResamplingCopy::new(rate))
+                                    .flatten(),
+                                _ => None,
+                            })
+                            .flatten()
+                        {
+                            Some(resampler) => (decoder, track.id, resampler),
+                            None => return Poll::Ready(None),
+                        }
+                    }
+                }
+            };
 
             let result = match decoder.decode(&packet) {
                 Err(e) => {
@@ -130,7 +150,7 @@ impl Stream for DecodedStream {
                     if data.frames() == 0 {
                         None
                     } else {
-                        Some(Poll::Ready(match data {
+                        let output = match data {
                             GenericAudioBufferRef::U8(buffer) => resampler.append(buffer),
                             GenericAudioBufferRef::U16(buffer) => resampler.append(buffer),
                             GenericAudioBufferRef::U24(buffer) => resampler.append(buffer),
@@ -141,7 +161,12 @@ impl Stream for DecodedStream {
                             GenericAudioBufferRef::S32(buffer) => resampler.append(buffer),
                             GenericAudioBufferRef::F32(buffer) => resampler.append(buffer),
                             GenericAudioBufferRef::F64(buffer) => resampler.append(buffer),
-                        }))
+                        };
+                        if output.is_empty() {
+                            None
+                        } else {
+                            Some(Poll::Ready(Some(output)))
+                        }
                     }
                 }
             };
@@ -157,18 +182,64 @@ impl Stream for DecodedStream {
 pub enum ResamplingCopy {
     Matched,
     Resample {
-        inputs: Vec<Vec<f32>>,
-        resampler: Fft<f32>,
+        buffer: Vec<f32>,
+        resampler: Async<f32>,
     },
+}
+
+fn resample(buffer: &mut Vec<f32>, resampler: &mut Async<f32>) -> Vec<Vec<f32>> {
+    let mut all_output = Vec::new();
+    loop {
+        let mut output = InterleavedOwned::new(0f32, 2, resampler.output_frames_next());
+        let buffer_in = match InterleavedSlice::new(&buffer, 2, buffer.len() / 2) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Failed to prepare input for resampling: {}", e);
+                return vec![];
+            }
+        };
+        let (input_frames, output_frames) =
+            match resampler.process_into_buffer(&buffer_in, &mut output, None) {
+                Ok(v) => v,
+                Err(ResampleError::InsufficientInputBufferSize { .. }) => break,
+                Err(e) => {
+                    eprintln!("Resampling error: {}", e);
+                    break;
+                }
+            };
+        let mut output = output.take_data();
+        output.truncate(2 * output_frames);
+        drop(buffer_in);
+        if input_frames != buffer.len() {
+            buffer.drain(0..(2 * input_frames));
+        } else {
+            buffer.truncate(0);
+        }
+        all_output.push(output);
+    }
+    all_output
 }
 impl ResamplingCopy {
     pub fn new(rate: u32) -> Option<Self> {
         if rate == 44100 {
             Some(ResamplingCopy::Matched)
         } else {
-            match Fft::<f32>::new(rate as usize, 44100, 1024, 2, 2, FixedSync::Input) {
+            match Async::<f32>::new_sinc(
+                44100.0 / (rate as f64),
+                10.0,
+                &SincInterpolationParameters {
+                    sinc_len: 256,
+                    f_cutoff: 0.95,
+                    oversampling_factor: 128,
+                    interpolation: SincInterpolationType::Cubic,
+                    window: WindowFunction::BlackmanHarris2,
+                },
+                2048,
+                2,
+                FixedAsync::Output,
+            ) {
                 Ok(resampler) => Some(ResamplingCopy::Resample {
-                    inputs: vec![Vec::new(), Vec::new()],
+                    buffer: Vec::new(),
                     resampler,
                 }),
                 Err(e) => {
@@ -178,100 +249,51 @@ impl ResamplingCopy {
             }
         }
     }
-    pub fn append<T: Sample + IntoSample<i16> + IntoSample<f32>>(
-        &mut self,
-        input: &AudioBuffer<T>,
-    ) -> Option<AudioBuffer<i16>> {
+    pub fn append<T: Sample>(&mut self, input: &AudioBuffer<T>) -> Vec<Vec<f32>>
+    where
+        f32: FromSample<T>,
+    {
         match self {
             ResamplingCopy::Matched => {
-                let mut output = AudioBuffer::<i16>::new(
-                    AudioSpec::new(
-                        44100,
-                        Channels::Positioned(Position::FRONT_LEFT | Position::FRONT_RIGHT),
-                    ),
-                    input.frames(),
-                );
-                output.render_uninit(Some(input.frames()));
-                for channel in 0..2 {
-                    let Channels::Positioned(positions) = input.spec().channels() else {
-                        continue;
-                    };
-                    let Some(dest) = output.plane_mut(channel) else {
-                        return None;
-                    };
-                    let Some(src) = input.plane(if positions.contains(Position::FRONT_RIGHT) {
-                        channel
-                    } else {
-                        0
-                    }) else {
-                        return None;
-                    };
-                    for (dest, src) in dest.iter_mut().zip(src) {
-                        *dest = (*src).into_sample();
-                    }
-                }
-                Some(output)
+                let mut output = Vec::with_capacity(input.frames() * 2);
+                input.copy_to_vec_interleaved(&mut output);
+                vec![output]
             }
-            ResamplingCopy::Resample { inputs, resampler } => {
-                let Channels::Positioned(positions) = input.spec().channels() else {
-                    return None;
-                };
-                for channel in 0..2 {
-                    let Some(plane) = input.plane(if positions.contains(Position::FRONT_RIGHT) {
-                        channel
-                    } else {
-                        0
-                    }) else {
-                        continue;
-                    };
-                    inputs[channel].extend(
-                        plane
-                            .iter()
-                            .map(|&s| <T as IntoSample<f32>>::into_sample(s)),
-                    );
-                }
-                let mut buffer: Vec<_> = (0..2)
-                    .into_iter()
-                    .map(|_| vec![0f32; resampler.output_frames_next()])
-                    .collect();
-
-                let (input_consumed, output_frames) = match resampler.process_into_buffer(
-                    &SequentialSliceOfVecs::new(&inputs, 2, input.frames())
-                        .expect("Failed to set up resampling input"),
-                    &mut SequentialSliceOfVecs::new_mut(
-                        &mut buffer,
-                        2,
-                        resampler.output_frames_next(),
-                    )
-                    .expect("Failed to set up resampling output"),
-                    None,
-                ) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("Resampling error: {}", e);
-                        return None;
-                    }
-                };
-                for input in inputs {
-                    input.drain(0..input_consumed);
-                }
-                let mut output = AudioBuffer::<i16>::new(
-                    AudioSpec::new(
-                        44100,
-                        Channels::Positioned(Position::FRONT_LEFT | Position::FRONT_RIGHT),
-                    ),
-                    output_frames,
-                );
-                output.render_uninit(Some(output_frames));
-                for (channel, buffer) in buffer.into_iter().enumerate() {
-                    let Some(plane) = output.plane_mut(channel) else {
-                        return None;
-                    };
-                    for (dest, src) in plane.iter_mut().zip(buffer) {
-                        *dest = src.into_sample();
+            ResamplingCopy::Resample { buffer, resampler } => {
+                let start = buffer.len();
+                buffer.resize(start + input.frames() * 2, 0.0);
+                if input.num_planes() == 2 {
+                    input.copy_to_slice_interleaved(&mut buffer[start..]);
+                } else {
+                    for frame in 0..input.frames() {
+                        for (plane, position) in
+                            [(0, Position::FRONT_LEFT), (1, Position::FRONT_RIGHT)]
+                        {
+                            buffer[start + frame * 2 + plane] = input
+                                .plane_by_position(position)
+                                .or(input.plane(0))
+                                .expect("No plane available in audio")[frame]
+                                .into_sample();
+                        }
                     }
                 }
-                Some(output)
+                if resampler.input_frames_next() > buffer.len() {
+                    vec![]
+                } else {
+                    resample(buffer, resampler)
+                }
+            }
+        }
+    }
+    pub fn drain(&mut self) -> Vec<Vec<f32>> {
+        match self {
+            ResamplingCopy::Matched => vec![],
+            ResamplingCopy::Resample { buffer, resampler } => {
+                if buffer.is_empty() {
+                    return vec![];
+                }
+                buffer.extend(repeat(0.0f32).take(resampler.input_frames_next() - buffer.len()));
+                resample(buffer, resampler)
             }
         }
     }

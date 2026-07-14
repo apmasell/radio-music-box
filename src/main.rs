@@ -15,7 +15,7 @@ use crate::playlist::Playlist;
 use crate::rate_limited_stream::RateLimitedStream;
 use clap::Parser;
 use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, stream};
 use http_body_util::{Full, StreamBody};
 use hyper::body::{Body, Bytes, Frame, Incoming};
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -79,7 +79,11 @@ impl Service<Request<Incoming>> for Songs {
                 (&Method::GET, "/stream.mp3", _) => {
                     match EncodedStream::new(ExitFilter::new(
                         exit,
-                        RateLimitedStream::new(Playlist::from(songs).flat_map(DecodedStream::from)),
+                        RateLimitedStream::new(
+                            Playlist::from(songs)
+                                .flat_map(DecodedStream::from)
+                                .flat_map(stream::iter),
+                        ),
                     )) {
                         Ok(stream) => Response::builder()
                             .header(CONTENT_TYPE, "audio/mp3")

@@ -5,15 +5,15 @@ use crate::pausable_stream::{PausableStream, PauseResume};
 use crate::playlist::Playlist;
 use alsa::pcm::{Access, Format, HwParams, State};
 use alsa::{Direction, PCM, ValueOr};
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use std::ffi::CString;
 use std::thread;
-use symphonia::core::audio::{Audio, AudioBuffer};
+use symphonia::core::audio::conv::IntoSample;
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
 enum NextBuffer {
-    Buffer(AudioBuffer<i16>),
+    Buffer(Vec<i16>),
     Paused,
 }
 
@@ -44,7 +44,8 @@ pub fn start(
     let (stream, pause_resume) = PausableStream::new(
         Playlist::from(songs)
             .flat_map(DecodedStream::from)
-            .map(NextBuffer::Buffer),
+            .flat_map(stream::iter)
+            .map(|buffer| NextBuffer::Buffer(buffer.into_iter().map(f32::into_sample).collect())),
         start_paused,
         NextBuffer::Paused,
     );
@@ -69,29 +70,21 @@ pub fn start(
         };
 
         while let Some(buffer) = receiver.blocking_recv() {
-            if pcm.state() == State::Setup {
-                if let Err(e) = pcm.prepare() {
-                    eprintln!("Failed to prepare to ALSA: {}", e);
-                    return;
-                }
-            }
             match buffer {
                 NextBuffer::Buffer(buffer) => {
-                    let mut offset = 0;
-                    while offset < buffer.frames() {
-                        let mut interleaved = Vec::with_capacity(buffer.frames() * 2);
-                        for frame in 0..buffer.frames() {
-                            let Some(left_plane) = buffer.plane(0) else {
-                                continue;
-                            };
-                            let Some(right_plane) = buffer.plane(1) else {
-                                continue;
-                            };
-                            interleaved.push(left_plane[frame]);
-                            interleaved.push(right_plane[frame]);
+                    if buffer.is_empty() {
+                        continue;
+                    }
+                    if pcm.state() == State::Setup {
+                        if let Err(e) = pcm.prepare() {
+                            eprintln!("Failed to prepare to ALSA: {}", e);
+                            return;
                         }
-                        match io.writei(&interleaved) {
-                            Ok(written) => offset += written,
+                    }
+                    let mut offset = 0;
+                    while offset < buffer.len() {
+                        match io.writei(&buffer[offset..]) {
+                            Ok(written) => offset += written * 2,
                             Err(e) if e.errno() == libc::EPIPE => {
                                 if let Err(e) = pcm.recover(libc::EPIPE, false) {
                                     eprintln!("Failed to recover from ALSA underrun: {}", e);

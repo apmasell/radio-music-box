@@ -43,6 +43,13 @@ impl Rated for AudioBuffer<i16> {
         self.frames() as u64
     }
 }
+impl Rated for Vec<f32> {
+    const RATE: u64 = 44_100;
+
+    fn quantity(&self) -> u64 {
+        (self.len() / 2) as u64
+    }
+}
 
 impl<S: Stream + Unpin> Stream for RateLimitedStream<S>
 where

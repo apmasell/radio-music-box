@@ -1,14 +1,13 @@
 use futures::{Stream, StreamExt};
 use hyper::body::Bytes;
 use mp3lame_sys::{
-    lame_close, lame_encode_buffer, lame_encode_flush, lame_init, lame_init_params,
-    lame_set_in_samplerate, lame_set_num_channels, lame_set_quality, lame_t,
+    lame_close, lame_encode_buffer_interleaved_ieee_float, lame_encode_flush, lame_init,
+    lame_init_params, lame_set_in_samplerate, lame_set_num_channels, lame_set_quality, lame_t,
 };
-use std::ffi::{c_int, c_short, c_uchar};
+use std::ffi::{c_float, c_int, c_uchar};
 use std::pin::Pin;
 use std::ptr::null_mut;
 use std::task::{Context, Poll};
-use symphonia::core::audio::{Audio, AudioBuffer};
 
 pub struct EncodedStream<I> {
     input: I,
@@ -38,7 +37,7 @@ impl<I> EncodedStream<I> {
         })
     }
 }
-impl<I: Stream<Item = AudioBuffer<i16>> + Unpin> Stream for EncodedStream<I> {
+impl<I: Stream<Item = Vec<f32>> + Unpin> Stream for EncodedStream<I> {
     type Item = Bytes;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -66,18 +65,11 @@ impl<I: Stream<Item = AudioBuffer<i16>> + Unpin> Stream for EncodedStream<I> {
             }
             Poll::Ready(Some(value)) => {
                 let mut buffer = vec![0_u8; value.capacity() + value.capacity() / 3 + 7200];
-                let Some(left_plane) = value.plane(0) else {
-                    return Poll::Ready(None);
-                };
-                let Some(right_plane) = value.plane(1) else {
-                    return Poll::Ready(None);
-                };
                 let length = unsafe {
-                    lame_encode_buffer(
+                    lame_encode_buffer_interleaved_ieee_float(
                         encoder.lame,
-                        left_plane.as_ptr() as *const c_short,
-                        right_plane.as_ptr() as *const c_short,
-                        value.frames() as c_int,
+                        value.as_ptr() as *const c_float,
+                        (value.len() / 2) as c_int,
                         buffer.as_ptr() as *mut c_uchar,
                         buffer.len() as c_int,
                     )
